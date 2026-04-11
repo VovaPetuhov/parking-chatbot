@@ -17,18 +17,18 @@ cp .env.example .env
 ```
 
 # Step #4 - init Vector DB
-# Populating the database 
-# Currently only *.txt files are supported
-# You need to add files to the /data folder and run this command
-# You can also set up environment variables and use DeepLake's cloude vector database,
-# otherwise local storage will be used.
-# use --force to owerride DB data
+Populating the database 
+Currently only *.txt files are supported
+You need to add files to the /data folder and run this command
+You can also set up environment variables and use DeepLake's cloud vector database,
+otherwise local storage will be used.
+Use --force to override DB data
 ```bash
 python init_db.py [--force]
 ```
 
 # Step #5 - run
-# use --quiet to disable log output
+Use --quiet to disable log output
 ```bash
 python main.py [--quiet]
 
