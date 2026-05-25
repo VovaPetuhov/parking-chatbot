@@ -1,12 +1,25 @@
 import logging
+from datetime import datetime
 from typing import Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import PromptTemplate
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from config.prompts import (
+    ASK_CAR_PLATE_MESSAGE,
+    ASK_DATES_MESSAGE,
+    ASK_NAME_MESSAGE,
+    ASK_SURNAME_MESSAGE,
+    CONFIRM_DATA_PROMPT,
+    INVALID_INPUT_MESSAGE,
+    RESERVATION_COLLECTED_MESSAGE,
+)
+from core.data_extractor import get_data_extractor
 from core.rag import get_rag_system
-from graphs.state import ChatbotState, create_initial_state
+from graphs.state import ChatbotState, ReservationData, ReservationStatus, create_initial_state
 from guardrails.pii_protection import get_guardrails_manager
 
 logger = logging.getLogger(__name__)
@@ -14,34 +27,121 @@ logger = logging.getLogger(__name__)
 
 class ParkingChatbot:
     """Main chatbot with LangGraph state machine"""
-    
+
+    MAX_RETRIES = 3  # Maximum retries for each field
+
     def __init__(self):
         logger.info("Initializing Parking Chatbot...")
         self.rag_system = get_rag_system()
         self.guardrails = get_guardrails_manager()
+        self.data_extractor = get_data_extractor()
         self.graph = self._build_graph()         
         logger.info("Parking Chatbot initialized")
     
     def _build_graph(self) -> StateGraph:        
         workflow = StateGraph(ChatbotState)
+
         # Add nodes
         workflow.add_node("check_guardrails", self._check_guardrails)
+        workflow.add_node("check_reservation_intent", self._check_reservation_intent)
         workflow.add_node("retrieve_context", self._retrieve_context)
         workflow.add_node("generate_response", self._generate_response)
         workflow.add_node("handle_unsafe_input", self._handle_unsafe_input)
+
+        # Reservation collection nodes
+        workflow.add_node("start_reservation", self._start_reservation)
+        workflow.add_node("collect_name", self._collect_name)
+        workflow.add_node("collect_surname", self._collect_surname)
+        workflow.add_node("collect_car_plate", self._collect_car_plate)
+        workflow.add_node("collect_dates", self._collect_dates)
+        workflow.add_node("confirm_reservation", self._confirm_reservation)
+        workflow.add_node("finalize_reservation", self._finalize_reservation)
+
         # Add edges
         workflow.add_edge(START, "check_guardrails")
+
         workflow.add_conditional_edges(
             "check_guardrails",
             self._route_after_guardrails,
             {
-                "safe": "retrieve_context",
+                "safe": "check_reservation_intent",
                 "unsafe": "handle_unsafe_input"
             }
         )
+
+        workflow.add_conditional_edges(
+            "check_reservation_intent",
+            self._route_after_intent_check,
+            {
+                "new_reservation": "start_reservation",
+                "continue_reservation": "collect_name",
+                "normal_query": "retrieve_context"
+            }
+        )
+
         workflow.add_edge("retrieve_context", "generate_response")
         workflow.add_edge("generate_response", END)
         workflow.add_edge("handle_unsafe_input", END)
+
+        # Reservation flow edges
+        workflow.add_edge("start_reservation", END)
+
+        workflow.add_conditional_edges(
+            "collect_name",
+            self._route_after_name,
+            {
+                "next_field": "collect_surname",
+                "asked_question": END,
+                "retry": "collect_name",
+                "fail": END
+            }
+        )
+
+        workflow.add_conditional_edges(
+            "collect_surname",
+            self._route_after_surname,
+            {
+                "next_field": "collect_car_plate",
+                "asked_question": END,
+                "retry": "collect_surname",
+                "fail": END
+            }
+        )
+
+        workflow.add_conditional_edges(
+            "collect_car_plate",
+            self._route_after_car_plate,
+            {
+                "next_field": "collect_dates",
+                "asked_question": END,
+                "retry": "collect_car_plate",
+                "fail": END
+            }
+        )
+
+        workflow.add_conditional_edges(
+            "collect_dates",
+            self._route_after_dates,
+            {
+                "next_field": "confirm_reservation",
+                "asked_question": END,
+                "retry": "collect_dates",
+                "fail": END
+            }
+        )
+
+        workflow.add_conditional_edges(
+            "confirm_reservation",
+            self._route_after_confirmation,
+            {
+                "confirmed": "finalize_reservation",
+                "rejected": "collect_name",
+                "fail": END
+            }
+        )
+
+        workflow.add_edge("finalize_reservation", END)
+
         memory = MemorySaver()
         return workflow.compile(checkpointer=memory)
     
@@ -61,9 +161,60 @@ class ParkingChatbot:
     ) -> Literal["safe", "unsafe"]:
         return "safe" if state["input_safe"] else "unsafe"
     
+    def _check_reservation_intent(self, state: ChatbotState) -> ChatbotState:
+        """Check if user wants to make a reservation or continue existing one"""
+        logger.info("Checking reservation intent...")
+        
+        current_status = state["reservation_status"]
+        logger.info(f"Current reservation status: {current_status}")
+
+        # If already in reservation process, continue
+        if state["reservation_status"] != ReservationStatus.NOT_STARTED:
+            logger.info(f"Continuing reservation process: {state['reservation_status']}")
+            return state
+
+        # Check if user wants to start new reservation
+        logger.info(f"Checking reservation intent: {state['user_input']}")
+        wants_reservation = self.data_extractor.check_reservation_intent(state["user_input"])
+        state["wants_reservation"] = wants_reservation
+        logger.info(f"Reservation intent: {wants_reservation}")
+
+        if wants_reservation:
+            logger.info("User wants to make a reservation")
+            state["reservation_status"] = ReservationStatus.STARTED
+
+        return state
+
+    def _route_after_intent_check(
+        self,
+        state: ChatbotState
+    ) -> Literal["new_reservation", "continue_reservation", "normal_query"]:
+        """Route based on reservation intent"""
+
+        # If already collecting name (status set by start_reservation)
+        if state["reservation_status"] == ReservationStatus.COLLECTING_NAME:
+            return "continue_reservation"
+
+        # If collecting other fields
+        if state["reservation_status"] in [
+            ReservationStatus.COLLECTING_SURNAME,
+            ReservationStatus.COLLECTING_CAR_PLATE,
+            ReservationStatus.COLLECTING_DATES,
+            ReservationStatus.CONFIRMING
+        ]:
+            return "continue_reservation"
+
+        # If just starting reservation
+        if state["wants_reservation"] or state["reservation_status"] == ReservationStatus.STARTED:
+            return "new_reservation"
+
+        # Normal information query
+        return "normal_query"
+
     def _retrieve_context(self, state: ChatbotState) -> ChatbotState:
         logger.info("Retrieving context...")
         user_input = state["user_input"]
+        logger.info(f"Retrieving context for: {user_input}")
         docs = self.rag_system.retrieve_context(user_input)        
         filtered_docs = self.guardrails.filter_context(docs)        
         context = "\n\n".join([doc.page_content for doc in filtered_docs])
@@ -74,6 +225,7 @@ class ParkingChatbot:
     def _generate_response(self, state: ChatbotState) -> ChatbotState:
         logger.info("Generating response...")
         user_input = state["user_input"]
+        logger.info(f"Generating answer for: {user_input}")
         context = state["retrieved_context"] or ""
         chat_history = state.get("messages", [])
         response = self.rag_system.generate_answer(
@@ -86,6 +238,7 @@ class ParkingChatbot:
             HumanMessage(content=user_input),
             AIMessage(content=safe_response)
         ]
+        logger.info("Answer generated")
         logger.info("Response generated")
         return state
     
@@ -113,12 +266,421 @@ class ParkingChatbot:
         ]
         
         return state
+
+    def _start_reservation(self, state: ChatbotState) -> ChatbotState:
+        logger.info("Starting reservation process...")
+        state["reservation_status"] = ReservationStatus.COLLECTING_NAME
+        state["retry_count"] = 0
+        state["response"] = ASK_NAME_MESSAGE
+        state["messages"] = state.get("messages", []) + [
+            HumanMessage(content=state["user_input"]),
+            AIMessage(content=ASK_NAME_MESSAGE)
+        ]
+        logger.info("Reservation process started - waiting for user's name")
+        return state
+
+    def _collect_name(self, state: ChatbotState) -> ChatbotState:
+        logger.info("Collecting name...")
+
+        # If name is already collected, skip extraction
+        if state["reservation_data"].name:
+            logger.info(f"Name already collected: {state['reservation_data'].name}")
+            return state
+
+        # Try to extract name from user input
+        name = self.data_extractor.extract_name(state["user_input"])
+
+        if name:
+            state["reservation_data"].name = name
+            logger.info(f"Name collected: {name}")
+            state["retry_count"] = 0
+            return state
+        else:
+            # Failed to extract name
+            state["retry_count"] = state.get("retry_count", 0) + 1
+            logger.warning(f"Failed to extract name. Retry count: {state['retry_count']}")
+
+            if state["retry_count"] >= self.MAX_RETRIES:
+                state["response"] = \
+                f"I'm having trouble understanding. "
+                f"Let's start over or try a different question."
+                state["reservation_status"] = ReservationStatus.CANCELLED
+            else:
+                state["response"] = INVALID_INPUT_MESSAGE.format(
+                    context="Please provide your first name (e.g., 'John' or 'My name is Sarah')."
+                )
+
+            state["messages"] = state.get("messages", []) + [
+                HumanMessage(content=state["user_input"]),
+                AIMessage(content=state["response"])
+            ]
+
+            return state
+
+    def _route_after_name(
+        self,
+        state: ChatbotState
+    ) -> Literal["next_field", "asked_question", "retry", "fail"]:
+        """Route after name collection"""
+        if state["reservation_status"] == ReservationStatus.CANCELLED:
+            return "fail"
+
+        # Data collected → move to next field
+        if state["reservation_data"].name:
+            return "next_field"
+
+        # Just asked question (no data, retry_count=0) → end invoke
+        if state.get("retry_count", 0) == 0 and not state["reservation_data"].name:
+            logger.info("Just asked for name, ending invoke to wait for response")
+            return "asked_question"
+
+        return "retry"
+
+    def _collect_surname(self, state: ChatbotState) -> ChatbotState:
+        """Collect user's surname"""
+        logger.info("Collecting surname...")
+
+        # First time asking - transition from COLLECTING_NAME to COLLECTING_SURNAME
+        if not state["reservation_data"].surname \
+            and state["reservation_status"] == ReservationStatus.COLLECTING_NAME:
+            state["reservation_status"] = ReservationStatus.COLLECTING_SURNAME
+            state["retry_count"] = 0
+            message = ASK_SURNAME_MESSAGE.format(name=state["reservation_data"].name)
+            state["response"] = message
+            state["messages"] = state.get("messages", []) + [
+                AIMessage(content=message)
+            ]
+            logger.info(f"Asked for surname, will wait for user response")
+            return state
+
+        # If surname already collected, skip
+        if state["reservation_data"].surname:
+            logger.info(f"Surname already collected: {state['reservation_data'].surname}")
+            return state
+
+        # Try to extract surname
+        logger.info(f"Extracting surname from: {state['user_input']}")
+        surname = self.data_extractor.extract_surname(state["user_input"])
+
+        if surname:
+            state["reservation_data"].surname = surname
+            logger.info(f"Surname collected: {surname}")
+            state["retry_count"] = 0
+            return state
+        else:
+            logger.info("Surname not found")
+            state["retry_count"] = state.get("retry_count", 0) + 1
+            logger.warning(f"Failed to extract surname. Retry count: {state['retry_count']}")
+
+            if state["retry_count"] >= self.MAX_RETRIES:
+                state["response"] = \
+                f"I'm having trouble understanding. "
+                f"Let's start over or try a different question."
+                state["reservation_status"] = ReservationStatus.CANCELLED
+            else:
+                state["response"] = INVALID_INPUT_MESSAGE.format(
+                    context="Please provide your last name (e.g., 'Smith' or 'My surname is Johnson')."
+                )
+
+            state["messages"] = state.get("messages", []) + [
+                HumanMessage(content=state["user_input"]),
+                AIMessage(content=state["response"])
+            ]
+
+            return state
+
+    def _route_after_surname(
+        self,
+        state: ChatbotState
+    ) -> Literal["next_field", "asked_question", "retry", "fail"]:
+        """Route after surname collection"""
+        if state["reservation_status"] == ReservationStatus.CANCELLED:
+            return "fail"
+
+        # If data collected, move to next field
+        if state["reservation_data"].surname:
+            return "next_field"
+
+        # If we just asked the question (retry_count is 0 and no surname yet), 
+        # treat as asked_question to end this invoke and wait for user response
+        if state.get("retry_count", 0) == 0 and not state["reservation_data"].surname:
+            logger.info("Just asked for surname, ending invoke to wait for response")
+            return "asked_question"
+
+        return "retry"
+
+    def _collect_car_plate(self, state: ChatbotState) -> ChatbotState:
+        """Collect car plate number"""
+        logger.info("Collecting car plate...")
+
+        # First time asking
+        if not state["reservation_data"].car_plate \
+            and state["reservation_status"] == ReservationStatus.COLLECTING_SURNAME:
+            state["reservation_status"] = ReservationStatus.COLLECTING_CAR_PLATE
+            state["retry_count"] = 0
+            message = ASK_CAR_PLATE_MESSAGE.format(
+                name=state["reservation_data"].name,
+                surname=state["reservation_data"].surname
+            )
+            state["response"] = message
+            state["messages"] = state.get("messages", []) + [
+                AIMessage(content=message)
+            ]
+            return state
+
+        # If car plate already collected, skip
+        if state["reservation_data"].car_plate:
+            logger.info(f"Car plate already collected: {state['reservation_data'].car_plate}")
+            return state
+
+        # Try to extract car plate
+        car_plate = self.data_extractor.extract_car_plate(state["user_input"])
+
+        if car_plate:
+            state["reservation_data"].car_plate = car_plate
+            logger.info(f"Car plate collected: {car_plate}")
+            state["retry_count"] = 0
+            return state
+        else:
+            state["retry_count"] = state.get("retry_count", 0) + 1
+            logger.warning(f"Failed to extract car plate. Retry count: {state['retry_count']}")
+
+            if state["retry_count"] >= self.MAX_RETRIES:
+                state["response"] = \
+                    f"I'm having trouble understanding. "
+                f"Let's start over or try a different question."
+                state["reservation_status"] = ReservationStatus.CANCELLED
+            else:
+                state["response"] = INVALID_INPUT_MESSAGE.format(
+                    context= \
+                    f"Please provide your car license plate number "
+                    f"(e.g., 'ABC123' or 'My plate is XY-456-ZZ')."
+                )
+
+            state["messages"] = state.get("messages", []) + [
+                HumanMessage(content=state["user_input"]),
+                AIMessage(content=state["response"])
+            ]
+
+            return state
+
+    def _route_after_car_plate(
+        self,
+        state: ChatbotState
+    ) -> Literal["next_field", "asked_question", "retry", "fail"]:
+        """Route after car plate collection"""
+        if state["reservation_status"] == ReservationStatus.CANCELLED:
+            return "fail"
+
+        # Data collected → move to next field
+        if state["reservation_data"].car_plate:
+            return "next_field"
+
+        # If we just asked the question (retry_count is 0 and no car_plate yet)
+        if state.get("retry_count", 0) == 0 and not state["reservation_data"].car_plate:
+            logger.info("Just asked for car plate, ending invoke to wait for response")
+            return "asked_question"
+
+        return "retry"
+
+    def _collect_dates(self, state: ChatbotState) -> ChatbotState:
+        """Collect reservation dates"""
+        logger.info("Collecting dates...")
+
+        # First time asking
+        if not state["reservation_data"].start_time and state["reservation_status"] == ReservationStatus.COLLECTING_CAR_PLATE:
+            state["reservation_status"] = ReservationStatus.COLLECTING_DATES
+            state["retry_count"] = 0
+            state["response"] = ASK_DATES_MESSAGE
+            state["messages"] = state.get("messages", []) + [
+                AIMessage(content=ASK_DATES_MESSAGE)
+            ]
+            return state
+
+        # If dates already collected, skip
+        if state["reservation_data"].start_time and state["reservation_data"].end_time:
+            logger.info(f"Dates already collected: {state['reservation_data'].start_time} - {state['reservation_data'].end_time}")
+            return state
+
+        # Try to extract dates
+        start_date, end_date = self.data_extractor.extract_dates(state["user_input"])
+
+        if start_date and end_date:
+            state["reservation_data"].start_time = start_date
+            state["reservation_data"].end_time = end_date
+            logger.info(f"Dates collected: {start_date} to {end_date}")
+            state["retry_count"] = 0
+            return state
+        else:
+            state["retry_count"] = state.get("retry_count", 0) + 1
+            logger.warning(f"Failed to extract dates. Retry count: {state['retry_count']}")
+
+            if state["retry_count"] >= self.MAX_RETRIES:
+                state["response"] = \
+                f"I'm having trouble understanding. "
+                f"Let's start over or try a different question."
+                state["reservation_status"] = ReservationStatus.CANCELLED
+            else:
+                state["response"] = INVALID_INPUT_MESSAGE.format(
+                    context= \
+                    f"Please provide start and end dates "
+                    f"(e.g., 'from January 20th to January 25th' or 'tomorrow for 3 days')."
+                )
+
+            state["messages"] = state.get("messages", []) + [
+                HumanMessage(content=state["user_input"]),
+                AIMessage(content=state["response"])
+            ]
+
+            return state
+
+    def _route_after_dates(
+        self,
+        state: ChatbotState
+    ) -> Literal["next_field", "asked_question", "retry", "fail"]:
+        """Route after dates collection"""
+        if state["reservation_status"] == ReservationStatus.CANCELLED:
+            return "fail"
+
+        # Data collected → move to confirmation
+        if state["reservation_data"].start_time and state["reservation_data"].end_time:
+            return "next_field"
+
+        # If we just asked the question (retry_count is 0 and no dates yet)
+        if state.get("retry_count", 0) == 0 \
+            and not (state["reservation_data"].start_time and state["reservation_data"].end_time):
+            logger.info("Just asked for dates, ending invoke to wait for response")
+            return "asked_question"
+
+        return "retry"
+
+    def _confirm_reservation(self, state: ChatbotState) -> ChatbotState:
+        """Ask user to confirm collected data"""
+        logger.info("Confirming reservation data...")
+
+        # First time showing confirmation
+        if state["reservation_status"] == ReservationStatus.COLLECTING_DATES:
+            state["reservation_status"] = ReservationStatus.CONFIRMING
+            state["retry_count"] = 0
+
+            # Generate confirmation message using LLM
+            prompt = PromptTemplate.from_template(CONFIRM_DATA_PROMPT)
+            chain = prompt | self.rag_system.llm | StrOutputParser()
+
+            data = state["reservation_data"]
+            message = chain.invoke({
+                "name": data.name,
+                "surname": data.surname,
+                "car_plate": data.car_plate,
+                "start_date": data.start_time,
+                "end_date": data.end_time
+            })
+
+            state["response"] = message
+            state["messages"] = state.get("messages", []) + [
+                AIMessage(content=message)
+            ]
+            return state
+
+        # User responded to confirmation
+        user_input = state["user_input"].lower().strip()
+
+        # Check for confirmation
+        confirmation_words = ["yes", "correct", "confirm", "right", "ok", "okay", "sure", "yep", "yeah"]
+        rejection_words = ["no", "wrong", "incorrect", "change", "fix", "nope"]
+
+        if any(word in user_input for word in confirmation_words):
+            logger.info("User confirmed reservation data")
+            state["reservation_status"] = ReservationStatus.COMPLETED
+            return state
+        elif any(word in user_input for word in rejection_words):
+            logger.info("User rejected reservation data")
+            state["reservation_status"] = ReservationStatus.STARTED
+            state["reservation_data"] = ReservationData()  # Reset data
+            state["response"] = "No problem! Let's start over. What is your first name?"
+            state["messages"] = state.get("messages", []) + [
+                HumanMessage(content=state["user_input"]),
+                AIMessage(content=state["response"])
+            ]
+            return state
+        else:
+            # Unclear response
+            state["retry_count"] = state.get("retry_count", 0) + 1
+
+            if state["retry_count"] >= self.MAX_RETRIES:
+                state["response"] = "I'm having trouble understanding. Let's start over."
+                state["reservation_status"] = ReservationStatus.CANCELLED
+            else:
+                state["response"] = "Please say 'yes' to confirm or 'no' if you'd like to make changes."
+
+            state["messages"] = state.get("messages", []) + [
+                HumanMessage(content=state["user_input"]),
+                AIMessage(content=state["response"])
+            ]
+
+            return state
+
+    def _route_after_confirmation(
+        self,
+        state: ChatbotState
+    ) -> Literal["confirmed", "rejected", "fail"]:
+        """Route after confirmation"""
+        if state["reservation_status"] == ReservationStatus.COMPLETED:
+            return "confirmed"
+        elif state["reservation_status"] == ReservationStatus.STARTED:
+            return "rejected"
+        else:
+            return "fail"
+
+    def _finalize_reservation(self, state: ChatbotState) -> ChatbotState:
+        """Finalize the reservation (Stage 1: just collect, Stage 2: send to admin)"""
+        logger.info("Finalizing reservation...")
+
+        data = state["reservation_data"]
+        message = RESERVATION_COLLECTED_MESSAGE.format(
+            name=data.name,
+            surname=data.surname,
+            car_plate=data.car_plate,
+            start_date=data.start_time,
+            end_date=data.end_time
+        )
+
+        state["response"] = message
+        state["messages"] = state.get("messages", []) + [
+            AIMessage(content=message)
+        ]
+
+        logger.info(
+            f"Reservation collected: {data.name} {data.surname}, "
+            f"{data.car_plate}, {data.start_time} - {data.end_time}"
+        )
+
+        # Reset reservation state for next conversation
+        state["reservation_status"] = ReservationStatus.NOT_STARTED
+
+        return state
     
     def chat(self, message: str, conversation_id: str = "default") -> str:
         logger.info(f"Processing message: {message}")
-        initial_state = create_initial_state(user_input=message)        
         config = {"configurable": {"thread_id": conversation_id}}        
-        result = self.graph.invoke(initial_state, config=config)  
+        
+        # Try to get existing state from checkpoint
+        try:
+            existing_state = self.graph.get_state(config)
+            if existing_state and existing_state.values:
+                # Update user input in existing state
+                current_state = existing_state.values.copy()
+                current_state["user_input"] = message
+                logger.info(f"Continuing conversation with status: {current_state.get('reservation_status')}")
+            else:
+                # No existing state, create new one
+                current_state = create_initial_state(user_input=message)
+                logger.info("Starting new conversation")
+        except Exception as e:
+            logger.warning(f"Could not retrieve existing state: {e}")
+            current_state = create_initial_state(user_input=message)
+        
+        result = self.graph.invoke(current_state, config=config)  
         response = result.get("response", "I'm sorry, I couldn't process that.")
         logger.info("Message processed")
         return response
