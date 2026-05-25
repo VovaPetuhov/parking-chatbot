@@ -12,12 +12,12 @@ from typing_extensions import TypedDict
 
 class ReservationStatus(str, Enum):
     """Status of reservation process"""
+    NOT_STARTED = "not_started"
     STARTED = "started"
     COLLECTING_NAME = "collecting_name"
     COLLECTING_SURNAME = "collecting_surname"
     COLLECTING_CAR_PLATE = "collecting_car_plate"
-    COLLECTING_START_TIME = "collecting_start_time"
-    COLLECTING_END_TIME = "collecting_end_time"
+    COLLECTING_DATES = "collecting_dates"
     CONFIRMING = "confirming"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
@@ -52,7 +52,9 @@ class ChatbotState(TypedDict):
     guardrails_report: Optional[dict]
     response: str
     conversation_id: Optional[str]
-    user_id: Optional[str] 
+    user_id: Optional[str]
+    wants_reservation: bool
+    retry_count: int
 
 
 def create_initial_state(
@@ -63,12 +65,14 @@ def create_initial_state(
     return ChatbotState(
         messages=messages or [],
         user_input=user_input,
-        reservation_status=ReservationStatus.STARTED,
+        reservation_status=ReservationStatus.NOT_STARTED,
         reservation_data=ReservationData(),
         retrieved_context=None,
         input_safe=True,
         guardrails_report=None,
         response="",
         conversation_id=conversation_id,
-        user_id=None
+        user_id=None,
+        wants_reservation=False,
+        retry_count=0
     )

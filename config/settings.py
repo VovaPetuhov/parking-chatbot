@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     openai_model_name: str = "gpt-4o-mini"
     openai_temperature: float = 0.0
     max_tokens: int = 1000
+    data_extraction_model: str = "gpt-4o-mini"
     
     # DeepLake Configuration
     deeplake_token: Optional[str] = None
