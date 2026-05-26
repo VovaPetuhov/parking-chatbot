@@ -27,7 +27,7 @@ Use --force to override DB data
 python init_db.py [--force]
 ```
 
-# Step #5 - run
+# Step #5 - run (cli mode)
 Use --quiet to disable log output
 ```bash
 python main.py [--quiet]
@@ -44,4 +44,31 @@ python -m evaluation.rag_eval
 
 ```bash
 pytest tests/ -v
+```
+
+## REST API
+
+```bash
+python main_api.py
+```
+
+# Swagger UI
+```
+http://localhost:8000/docs
+```
+
+# Health Check
+```bash
+GET /api/health
+```
+
+# Send Message
+```bash
+POST /api/chat
+Content-Type: application/json
+
+{
+  "message": "What are the working hours?",
+  "conversation_id": "optional-session-id"
+}
 ```

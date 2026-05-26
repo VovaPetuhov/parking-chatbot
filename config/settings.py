@@ -1,6 +1,7 @@
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Project root directory
@@ -50,6 +51,12 @@ class Settings(BaseSettings):
     working_hours_weekend: str = "08:00-22:00"
     price_per_hour: float = 5.00
     price_per_day: float = 40.00
+
+    # API Configuration
+    api_host: str = Field(default="0.0.0.0")
+    api_port: int = Field(default=8000)
+    api_reload: bool = Field(default=True)
+    cors_origins: List[str] = Field(default=["*"])
     
     model_config = SettingsConfigDict(
         env_file=".env",
