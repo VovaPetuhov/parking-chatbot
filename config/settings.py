@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000)
     api_reload: bool = Field(default=True)
     cors_origins: List[str] = Field(default=["*"])
+
+    session_ttl_seconds: int = Field(default=3600, description="Session TTL in seconds (default: 1 hour)")
+    max_sessions: int = Field(default=1000, description="Maximum concurrent sessions")
     
     model_config = SettingsConfigDict(
         env_file=".env",

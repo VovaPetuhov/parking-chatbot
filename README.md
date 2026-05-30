@@ -46,23 +46,23 @@ python -m evaluation.rag_eval
 pytest tests/ -v
 ```
 
-## REST API
+# REST API
 
 ```bash
 python main_api.py
 ```
 
-# Swagger UI
+## Swagger UI
 ```
 http://localhost:8000/docs
 ```
 
-# Health Check
+## Health Check
 ```bash
 GET /api/health
 ```
 
-# Send Message
+## Send Message
 ```bash
 POST /api/chat
 Content-Type: application/json
