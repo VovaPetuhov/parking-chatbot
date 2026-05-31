@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from functools import partial
 from typing import Optional
 
 from api.session_manager import get_session_manager
@@ -58,9 +60,8 @@ class ChatbotAdapter:
             # Add user message to history
             await self.session_manager.add_message(conversation_id, "user", message)
 
-            # Get chatbot response
-            chatbot = self.get_chatbot_instance()
-            response = chatbot.chat(message, conversation_id)
+            # Get chatbot response (async wrapper for sync chatbot)
+            response = await self._chat_async(message, conversation_id)
 
             # Add assistant response to history
             await self.session_manager.add_message(conversation_id, "assistant", response)
@@ -72,6 +73,19 @@ class ChatbotAdapter:
             logger.error(f"Error in chatbot processing: {e}", exc_info=True)
             raise
     
+    async def _chat_async(self, message: str, conversation_id: str) -> str:
+        loop = asyncio.get_event_loop()
+        chatbot = self.get_chatbot_instance()
+
+        # Run sync chatbot.chat() in default ThreadPoolExecutor
+        # This prevents blocking the async event loop
+        response = await loop.run_in_executor(
+            None,
+            partial(chatbot.chat, message, conversation_id)
+        )
+
+        return response
+
     @classmethod
     def get_chatbot_instance(cls) -> ParkingChatbot:
         return cls.get_instance()
