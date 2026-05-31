@@ -7,11 +7,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api import admin_routes, user_routes
 from api.chatbot_adapter import get_chatbot_adapter
 from api.models import (ChatRequest, ChatResponse, ConversationCreate,
                         ConversationDeleteResponse, ConversationHistory,
                         ConversationListResponse, ConversationResponse,
                         HealthResponse)
+from api.reservation_manager import get_reservation_manager
 from api.session_manager import get_session_manager
 from config.settings import settings
 
@@ -23,6 +25,11 @@ session_manager = get_session_manager(
 )
 
 chatbot_adapter = get_chatbot_adapter()
+
+reservation_manager = get_reservation_manager(
+    pending_ttl_seconds=getattr(settings, 'reservation_ttl_seconds', 3600),
+    max_reservations=getattr(settings, 'max_reservations', 10000)
+)
 
 
 @asynccontextmanager
@@ -36,18 +43,24 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize chatbot: {e}")
         raise
     
-    logger.info("Starting background cleanup task...")
-    cleanup_task = asyncio.create_task(session_manager.cleanup_task())
-    
+    logger.info("Starting background cleanup tasks...")
+    session_cleanup_task = asyncio.create_task(session_manager.cleanup_task())
+    reservation_cleanup_task = asyncio.create_task(reservation_manager.cleanup_task())
+
     yield
-    
+
     logger.info("Shutting down Parking Chatbot API...")
     logger.info("Stopping background tasks...")
-    cleanup_task.cancel()
+    session_cleanup_task.cancel()
+    reservation_cleanup_task.cancel()
     try:
-        await cleanup_task
+        await session_cleanup_task
     except asyncio.CancelledError:
-        logger.info("Cleanup task cancelled successfully")
+        logger.info("Session cleanup task cancelled successfully")
+    try:
+        await reservation_cleanup_task
+    except asyncio.CancelledError:
+        logger.info("Reservation cleanup task cancelled successfully")
 
 
 app = FastAPI(
@@ -259,3 +272,7 @@ async def reset_conversation(conversation_id: str):
         status="reset",
         message=f"Conversation {conversation_id} reset successfully"
     )
+
+
+app.include_router(admin_routes.router)
+app.include_router(user_routes.router)

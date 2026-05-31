@@ -60,7 +60,10 @@ class Settings(BaseSettings):
 
     session_ttl_seconds: int = Field(default=3600, description="Session TTL in seconds (default: 1 hour)")
     max_sessions: int = Field(default=1000, description="Maximum concurrent sessions")
-    
+
+    reservation_ttl_seconds: int = Field(default=3600, description="Reservation approval TTL in seconds (default: 1 hour)")
+    max_reservations: int = Field(default=10000, description="Maximum reservations storage")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

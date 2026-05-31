@@ -57,12 +57,14 @@ python main_api.py
 http://localhost:8000/docs
 ```
 
-## Health Check
+## API Endpoints
+
+### Health Check
 ```bash
 GET /api/health
 ```
 
-## Send Message
+### Chat with Bot
 ```bash
 POST /api/chat
 Content-Type: application/json
@@ -72,3 +74,23 @@ Content-Type: application/json
   "conversation_id": "optional-session-id"
 }
 ```
+
+### Session Management
+- `POST /api/conversations` - Create new conversation
+- `GET /api/conversations` - List all conversations
+- `GET /api/conversations/{id}` - Get conversation details
+- `GET /api/conversations/{id}/history` - Get conversation history
+- `DELETE /api/conversations/{id}` - Delete conversation
+- `POST /api/conversations/{id}/reset` - Reset conversation
+
+### Human-in-the-Loop (Admin)
+- `GET /api/admin/reservations/pending` - List pending reservations
+- `GET /api/admin/reservations` - List all reservations
+- `GET /api/admin/reservations/{id}` - Get reservation details
+- `POST /api/admin/reservations/{id}/approve` - Approve reservation
+- `POST /api/admin/reservations/{id}/reject` - Reject reservation
+- `GET /api/admin/stats` - Get reservation statistics
+
+### Reservation Status (User)
+- `GET /api/reservations/{id}/status` - Check reservation status
+- `GET /api/reservations/conversation/{id}` - Get reservation by conversation
