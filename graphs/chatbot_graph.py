@@ -1,5 +1,4 @@
 import logging
-from datetime import datetime
 from typing import Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -8,18 +7,13 @@ from langchain_core.prompts import PromptTemplate
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from config.prompts import (
-    ASK_CAR_PLATE_MESSAGE,
-    ASK_DATES_MESSAGE,
-    ASK_NAME_MESSAGE,
-    ASK_SURNAME_MESSAGE,
-    CONFIRM_DATA_PROMPT,
-    INVALID_INPUT_MESSAGE,
-    RESERVATION_COLLECTED_MESSAGE,
-)
+from config.prompts import (ASK_CAR_PLATE_MESSAGE, ASK_DATES_MESSAGE,
+                            ASK_NAME_MESSAGE, ASK_SURNAME_MESSAGE,
+                            CONFIRM_DATA_PROMPT, INVALID_INPUT_MESSAGE)
 from core.data_extractor import get_data_extractor
 from core.rag import get_rag_system
-from graphs.state import ChatbotState, ReservationData, ReservationStatus, create_initial_state
+from graphs.state import (ChatbotState, ReservationData, ReservationStatus,
+                          create_initial_state)
 from guardrails.pii_protection import get_guardrails_manager
 
 logger = logging.getLogger(__name__)
@@ -633,29 +627,64 @@ class ParkingChatbot:
             return "fail"
 
     def _finalize_reservation(self, state: ChatbotState) -> ChatbotState:
-        """Finalize the reservation (Stage 1: just collect, Stage 2: send to admin)"""
+        """Finalize the reservation and send to admin for approval"""
         logger.info("Finalizing reservation...")
 
         data = state["reservation_data"]
-        message = RESERVATION_COLLECTED_MESSAGE.format(
-            name=data.name,
-            surname=data.surname,
-            car_plate=data.car_plate,
-            start_date=data.start_time,
-            end_date=data.end_time
-        )
+        conversation_id = state.get("conversation_id", "default")
+
+        try:
+            from api.reservation_manager import get_reservation_manager
+            from api.reservation_models import ReservationCreate
+
+            reservation_manager = get_reservation_manager()
+
+            reservation_data = ReservationCreate(
+                conversation_id=conversation_id,
+                name=data.name,
+                surname=data.surname,
+                car_plate=data.car_plate,
+                start_time=data.start_time,
+                end_time=data.end_time
+            )
+
+            reservation = reservation_manager.create_reservation_sync(reservation_data)
+
+            message = (
+                f"Thank you, {data.name}! Your reservation request has been submitted.\n\n"
+                f"Reservation Details:\n"
+                f"Name: {data.name} {data.surname}\n"
+                f"Car Plate: {data.car_plate}\n"
+                f"Period: {data.start_time} to {data.end_time}\n\n"
+                f"reservation ID: {reservation.reservation_id}\n\n"
+                f"Your request is now being reviewed by our administrator. "
+                f"You will be notified once a decision is made. "
+                f"You can check the status anytime using your reservation ID."
+            )
+
+            logger.info(
+                f"Reservation created: {reservation.reservation_id} for "
+                f"{data.name} {data.surname}, {data.car_plate}, "
+                f"{data.start_time} - {data.end_time}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error creating reservation: {e}", exc_info=True)
+            message = (
+                f"Your reservation data has been collected:\n\n"
+                f"Details:\n"
+                f"Name: {data.name} {data.surname}\n"
+                f"car Plate: {data.car_plate}\n"
+                f"Period: {data.start_time} to {data.end_time}\n\n"
+                f"However, there was a technical issue submitting it for approval. "
+                f"Please contact our support team."
+            )
 
         state["response"] = message
         state["messages"] = state.get("messages", []) + [
             AIMessage(content=message)
         ]
 
-        logger.info(
-            f"Reservation collected: {data.name} {data.surname}, "
-            f"{data.car_plate}, {data.start_time} - {data.end_time}"
-        )
-
-        # Reset reservation state for next conversation
         state["reservation_status"] = ReservationStatus.NOT_STARTED
 
         return state
