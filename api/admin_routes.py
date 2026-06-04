@@ -8,7 +8,7 @@ from api.reservation_manager import get_reservation_manager
 from api.reservation_models import (ReservationApproval,
                                     ReservationListResponse,
                                     ReservationResponse, ReservationStatusEnum)
-from mcp import get_mcp_client
+from mcp_client import get_mcp_client
 
 logger = logging.getLogger(__name__)
 

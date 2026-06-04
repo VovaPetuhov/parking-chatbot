@@ -25,6 +25,7 @@ class MCPSettings(BaseSettings):
     class Config:
         env_prefix = "MCP_"
         env_file = ".env"
+        extra = "ignore"  # Ignore extra fields from .env file
 
 
 _settings: MCPSettings | None = None

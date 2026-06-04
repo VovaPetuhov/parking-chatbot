@@ -17,7 +17,7 @@ from api.models import (ChatRequest, ChatResponse, ConversationCreate,
 from api.reservation_manager import get_reservation_manager
 from api.session_manager import get_session_manager
 from config.settings import settings
-from mcp import get_mcp_settings
+from mcp_client import get_mcp_settings
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,8 @@ from typing import Optional
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.config import MCPSettings, get_mcp_settings
+
+from mcp_client.config import MCPSettings, get_mcp_settings
 
 logger = logging.getLogger(__name__)
 
