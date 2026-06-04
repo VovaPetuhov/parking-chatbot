@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,7 @@ from api.models import (ChatRequest, ChatResponse, ConversationCreate,
 from api.reservation_manager import get_reservation_manager
 from api.session_manager import get_session_manager
 from config.settings import settings
+from mcp import get_mcp_settings
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,17 @@ reservation_manager = get_reservation_manager(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Parking Chatbot API...")
+
+    logger.info("Initializing MCP storage...")
+    try:
+        mcp_settings = get_mcp_settings()
+        storage_path = Path(mcp_settings.STORAGE_PATH)
+        storage_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"MCP storage directory ready: {storage_path.absolute()}")
+    except Exception as e:
+        logger.error(f"Failed to initialize MCP storage: {e}", exc_info=True)
+        logger.warning("MCP storage initialization failed, file persistence may not work")
+
     logger.info("Initializing chatbot...")
     try:
         chatbot_adapter.get_instance()
