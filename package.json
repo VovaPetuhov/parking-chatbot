@@ -1,0 +1,35 @@
+{
+  "name": "parking-chatbot",
+  "version": "1.0.0",
+  "description": "AI-powered parking reservation chatbot with human-in-the-loop approval and MCP integration",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "mcp:server": "node node_modules/@modelcontextprotocol/server-filesystem/dist/index.js ./storage",
+    "mcp:dev": "node node_modules/@modelcontextprotocol/server-filesystem/dist/index.js ./storage"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VovaPetuhov/parking-chatbot.git"
+  },
+  "keywords": [
+    "chatbot",
+    "parking",
+    "ai",
+    "mcp",
+    "anthropic"
+  ],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/VovaPetuhov/parking-chatbot/issues"
+  },
+  "homepage": "https://github.com/VovaPetuhov/parking-chatbot#readme",
+  "dependencies": {
+    "@modelcontextprotocol/server-filesystem": "^2026.1.14"
+  }
+}

@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -7,12 +8,14 @@ from api.reservation_manager import get_reservation_manager
 from api.reservation_models import (ReservationApproval,
                                     ReservationListResponse,
                                     ReservationResponse, ReservationStatusEnum)
+from mcp_client import get_mcp_client
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
 reservation_manager = get_reservation_manager()
+mcp_client = get_mcp_client()
 
 
 @router.get(
@@ -92,7 +95,7 @@ async def approve_reservation(
     reservation_id: str,
     approval: ReservationApproval
 ):
-    """Approve reservation"""
+    """Approve reservation and persist to file via MCP"""
     if not approval.approved:
         raise HTTPException(
             status_code=400,
@@ -113,6 +116,30 @@ async def approve_reservation(
         f"Reservation {reservation_id} approved by admin "
         f"(comment: {approval.comment})"
     )
+
+    try:
+        mcp_success = await mcp_client.write_confirmed_reservation(
+            name=reservation.name,
+            surname=reservation.surname,
+            car_plate=reservation.car_plate,
+            start_time=reservation.start_time,
+            end_time=reservation.end_time,
+            approval_time=datetime.now()
+        )
+        if mcp_success:
+            logger.info(f"MCP: Reservation {reservation_id} persisted to file storage")
+        else:
+            logger.warning(
+                f"MCP: Failed to persist reservation {reservation_id}, "
+                f"but reservation remains approved"
+            )
+    except Exception as mcp_error:
+        logger.error(
+            f"MCP: Exception while persisting reservation {reservation_id}: {mcp_error}",
+            exc_info=True
+        )
+        logger.warning(f"Reservation {reservation_id} is approved, but not persisted to file")
+
     return reservation
 
 

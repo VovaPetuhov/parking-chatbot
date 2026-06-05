@@ -11,6 +11,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+# Step #2.5 - install MCP dependencies (for file persistence)
+```bash
+npm install
+```
+
 # Step #3 - setup env variables
 ```bash
 cp .env.example .env
@@ -94,3 +99,32 @@ Content-Type: application/json
 ### Reservation Status (User)
 - `GET /api/reservations/{id}/status` - Check reservation status
 - `GET /api/reservations/conversation/{id}` - Get reservation by conversation
+
+# MCP Integration
+
+This project uses MCP to persist confirmed reservations to file storage.
+
+### Quick Start
+
+1. **Configure** in `.env`:
+   ```bash
+   MCP_ENABLED=true
+   MCP_STORAGE_PATH=./storage
+   MCP_STORAGE_FILE=confirmed_reservations.txt
+   ```
+2. **Start API** - MCP integration works automatically
+3. **Approve reservation** - it will be written to `./storage/confirmed_reservations.txt`
+
+
+### File Format
+```
+Name | Car Number | Period | Approval Time
+John Doe | ABC-123 | 2024-01-20 10:00 to 2024-01-25 18:00 | 2024-01-18 15:30:45
+```
+
+### Disable MCP
+
+If you don't need file persistence:
+```bash
+MCP_ENABLED=false
+```
