@@ -97,12 +97,12 @@ curl -H "X-Admin-API-Key: your-api-key" http://localhost:8000/api/admin/reservat
 ```
 
 **Protected Admin Endpoints:**
-- `GET /api/admin/reservations/pending` - List pending reservations 🔒
-- `GET /api/admin/reservations` - List all reservations 🔒
-- `GET /api/admin/reservations/{id}` - Get reservation details 🔒
-- `POST /api/admin/reservations/{id}/approve` - Approve reservation 🔒
-- `POST /api/admin/reservations/{id}/reject` - Reject reservation 🔒
-- `GET /api/admin/stats` - Get reservation statistics 🔒
+- `GET /api/admin/reservations/pending` - List pending reservations
+- `GET /api/admin/reservations` - List all reservations
+- `GET /api/admin/reservations/{id}` - Get reservation details
+- `POST /api/admin/reservations/{id}/approve` - Approve reservation
+- `POST /api/admin/reservations/{id}/reject` - Reject reservation
+- `GET /api/admin/stats` - Get reservation statistics
 
 **Public Endpoints (No authentication required):**
 - `GET /api/reservations/{id}/status` - Check reservation status
