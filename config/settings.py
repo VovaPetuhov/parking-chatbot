@@ -64,6 +64,26 @@ class Settings(BaseSettings):
     reservation_ttl_seconds: int = Field(default=3600, description="Reservation approval TTL in seconds (default: 1 hour)")
     max_reservations: int = Field(default=10000, description="Maximum reservations storage")
 
+    email_notifications_enabled: bool = Field(
+        default=False,
+        description="Enable email notifications to admin about new reservations"
+    )
+    admin_email: str = Field(
+        default="",
+        description="Admin email address to receive reservation notifications"
+    )
+    smtp_host: str = Field(default="smtp.gmail.com", description="SMTP server hostname")
+    smtp_port: int = Field(default=587, description="SMTP server port")
+    smtp_username: str = Field(default="", description="SMTP username for authentication")
+    smtp_password: str = Field(default="", description="SMTP password for authentication")
+    smtp_use_tls: bool = Field(default=True, description="Use TLS for SMTP connection")
+    email_from: str = Field(default="parking-bot@example.com", description="Sender email address")
+    email_from_name: str = Field(default="Parking Reservation System", description="Sender name displayed in email")
+    admin_dashboard_url: str = Field(
+        default="http://localhost:8000",
+        description="Base URL for admin dashboard (used in email links)"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

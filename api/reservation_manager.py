@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import threading
 import uuid
 from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from api.notification_service import get_notification_service
 from api.reservation_models import (ReservationCreate, ReservationResponse,
                                     ReservationStatusEnum)
 
@@ -92,6 +94,57 @@ class ReservationManager:
     def create_reservation_sync(self, data: ReservationCreate) -> ReservationResponse:
         return self._create_reservation_internal(data)
 
+    def _schedule_email_notification(self, reservation: Reservation) -> None:
+        try:
+            notification_service = get_notification_service()
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    notification_service.send_new_reservation_notification(
+                        reservation_id=reservation.reservation_id,
+                        name=reservation.name,
+                        surname=reservation.surname,
+                        car_plate=reservation.car_plate,
+                        start_time=reservation.start_time,
+                        end_time=reservation.end_time,
+                        conversation_id=reservation.conversation_id
+                    )
+                )
+                logger.debug(f"Email notification task created for {reservation.reservation_id}")
+            except RuntimeError:
+
+                def send_email_sync():
+                    """Run email sending in a new event loop in background thread"""
+                    try:
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        new_loop.run_until_complete(
+                            notification_service.send_new_reservation_notification(
+                                reservation_id=reservation.reservation_id,
+                                name=reservation.name,
+                                surname=reservation.surname,
+                                car_plate=reservation.car_plate,
+                                start_time=reservation.start_time,
+                                end_time=reservation.end_time,
+                                conversation_id=reservation.conversation_id
+                            )
+                        )
+                        new_loop.close()
+                    except Exception as e:
+                        logger.error(f"Background email sending failed: {e}", exc_info=True)
+
+                # Start in background thread (daemon so it doesn't block shutdown)
+                thread = threading.Thread(target=send_email_sync, daemon=True)
+                thread.start()
+                logger.debug(f"Email notification thread started for {reservation.reservation_id}")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to schedule email notification for {reservation.reservation_id}: {e}",
+                exc_info=True
+            )
+
     def _create_reservation_internal(self, data: ReservationCreate) -> ReservationResponse:
         reservation_id = f"res_{uuid.uuid4().hex[:12]}"
 
@@ -117,8 +170,12 @@ class ReservationManager:
         self.reservations.move_to_end(reservation_id)
 
         logger.info(
-            f"Created reservation {reservation_id} for {data.name} {data.surname}"
+            f"Created reservation {reservation_id} for {data.name} {data.surname}, "
+            f"car {data.car_plate}, period {data.start_time} - {data.end_time}"
         )
+
+        self._schedule_email_notification(reservation)
+
         return reservation.to_response()
 
     async def get_reservation(

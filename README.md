@@ -128,3 +128,41 @@ If you don't need file persistence:
 ```bash
 MCP_ENABLED=false
 ```
+
+# Email Notifications (Optional)
+
+The system can automatically send email notifications to administrators when new parking reservations are created.
+
+## Quick Setup (Gmail)
+
+### 1. Enable 2-Factor Authentication
+- Go to: https://myaccount.google.com/security
+- Enable "2-Step Verification"
+
+### 2. Create App Password
+- Go to: https://myaccount.google.com/apppasswords
+- Select "Mail" and "Other (Custom name)"
+- Name it: "Parking Chatbot"
+- Copy the 16-character password (remove spaces!)
+
+### 3. Configure `.env`
+```bash
+# Enable email notifications
+EMAIL_NOTIFICATIONS_ENABLED=true
+
+# Admin email (where notifications will be sent)
+ADMIN_EMAIL=your-email@gmail.com
+
+# SMTP settings for Gmail
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_USERNAME=your-email@gmail.com
+SMTP_PASSWORD=your-16-char-app-password-no-spaces
+SMTP_USE_TLS=true
+
+# Email sender info
+EMAIL_FROM=your-email@gmail.com
+EMAIL_FROM_NAME=Parking Bot
+```
+
+The system works normally without emails - admins can still check pending reservations via API.
