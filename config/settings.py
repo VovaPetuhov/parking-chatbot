@@ -84,6 +84,11 @@ class Settings(BaseSettings):
         description="Base URL for admin dashboard (used in email links)"
     )
 
+    admin_api_key: str = Field(
+        default="",
+        description="API key for administrative endpoints (REQUIRED for production)"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -92,9 +97,20 @@ class Settings(BaseSettings):
     )
     
     def validate_config(self) -> None:
+        import logging
+        logger = logging.getLogger(__name__)
+
         if not self.openai_api_key or self.openai_api_key == "your-openai-api-key-here":
             raise ValueError(
                 "OPENAI_API_KEY haven't been set up yet."
+            )
+
+        if not self.admin_api_key:
+            logger.warning(
+                "   SECURITY WARNING: ADMIN_API_KEY is not set! \n"
+                "   Admin endpoints are UNPROTECTED and accessible without authentication.\n"
+                "   Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'\n"
+                "   Then set ADMIN_API_KEY in your .env file."
             )
     
     @property

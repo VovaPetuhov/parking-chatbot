@@ -2,8 +2,9 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from api.auth import verify_admin_api_key
 from api.chatbot_adapter import ChatbotAdapter
 from api.reservation_manager import get_reservation_manager
 from api.reservation_models import (ReservationApproval,
@@ -24,7 +25,8 @@ mcp_client = get_mcp_client()
     "/reservations/pending",
     response_model=list[ReservationResponse],
     summary="Get all pending reservations",
-    description="Retrieve list of all reservations awaiting admin approval"
+    description="Retrieve list of all reservations awaiting admin approval",
+    dependencies=[Depends(verify_admin_api_key)]
 )
 async def get_pending_reservations():
     try:
@@ -40,7 +42,8 @@ async def get_pending_reservations():
     "/reservations",
     response_model=ReservationListResponse,
     summary="Get all reservations",
-    description="Retrieve all reservations with optional status filter"
+    description="Retrieve all reservations with optional status filter",
+    dependencies=[Depends(verify_admin_api_key)]
 )
 async def get_all_reservations(
     status: Optional[ReservationStatusEnum] = Query(
@@ -73,7 +76,8 @@ async def get_all_reservations(
     "/reservations/{reservation_id}",
     response_model=ReservationResponse,
     summary="Get reservation details",
-    description="Retrieve detailed information about specific reservation"
+    description="Retrieve detailed information about specific reservation",
+    dependencies=[Depends(verify_admin_api_key)]
 )
 async def get_reservation(reservation_id: str):
     reservation = await reservation_manager.get_reservation(reservation_id)
@@ -91,7 +95,8 @@ async def get_reservation(reservation_id: str):
     "/reservations/{reservation_id}/approve",
     response_model=ReservationResponse,
     summary="Approve reservation",
-    description="Approve pending reservation and resume LangGraph workflow"
+    description="Approve pending reservation and resume LangGraph workflow",
+    dependencies=[Depends(verify_admin_api_key)]
 )
 async def approve_reservation(
     reservation_id: str,
@@ -199,7 +204,8 @@ async def approve_reservation(
     "/reservations/{reservation_id}/reject",
     response_model=ReservationResponse,
     summary="Reject reservation",
-    description="Reject pending reservation and resume LangGraph workflow"
+    description="Reject pending reservation and resume LangGraph workflow",
+    dependencies=[Depends(verify_admin_api_key)]
 )
 async def reject_reservation(
     reservation_id: str,
@@ -311,7 +317,8 @@ async def reject_reservation(
 @router.get(
     "/stats",
     summary="Get reservation statistics",
-    description="Get overall statistics about reservations"
+    description="Get overall statistics about reservations",
+    dependencies=[Depends(verify_admin_api_key)]
 )
 async def get_reservation_stats():
     """Get reservation statistics"""

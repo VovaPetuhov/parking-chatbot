@@ -5,7 +5,7 @@ pyenv local 3.12.9
 python3 -m venv .venv
 source .venv/bin/activate
 ```
-
+### Reservation Status (User - Public)
 # Step #2 - install requirements
 ```bash
 pip install -r requirements.txt
@@ -89,14 +89,24 @@ Content-Type: application/json
 - `POST /api/conversations/{id}/reset` - Reset conversation
 
 ### Human-in-the-Loop (Admin)
-- `GET /api/admin/reservations/pending` - List pending reservations
-- `GET /api/admin/reservations` - List all reservations
-- `GET /api/admin/reservations/{id}` - Get reservation details
-- `POST /api/admin/reservations/{id}/approve` - Approve reservation
-- `POST /api/admin/reservations/{id}/reject` - Reject reservation
-- `GET /api/admin/stats` - Get reservation statistics
 
-### Reservation Status (User)
+**⚠️ IMPORTANT: All admin endpoints require authentication!**
+
+You must include the `X-Admin-API-Key` header with a valid API key:
+
+```bash
+curl -H "X-Admin-API-Key: your-api-key" http://localhost:8000/api/admin/reservations/pending
+```
+
+**Protected Admin Endpoints:**
+- `GET /api/admin/reservations/pending` - List pending reservations 🔒
+- `GET /api/admin/reservations` - List all reservations 🔒
+- `GET /api/admin/reservations/{id}` - Get reservation details 🔒
+- `POST /api/admin/reservations/{id}/approve` - Approve reservation 🔒
+- `POST /api/admin/reservations/{id}/reject` - Reject reservation 🔒
+- `GET /api/admin/stats` - Get reservation statistics 🔒
+
+**Public Endpoints (No authentication required):**
 - `GET /api/reservations/{id}/status` - Check reservation status
 - `GET /api/reservations/conversation/{id}` - Get reservation by conversation
 
@@ -166,3 +176,48 @@ EMAIL_FROM_NAME=Parking Bot
 ```
 
 The system works normally without emails - admins can still check pending reservations via API.
+
+# Security
+
+## Admin Authentication
+
+All administrative endpoints require authentication via API key to prevent unauthorized access.
+
+### Initial Setup
+
+**1. Generate a secure API key:**
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Example output:
+```
+qJ8K-_3mN5rT9wXyZ2pL4vC8bH6fD1aE7sG0kM9uQ4R
+```
+
+**2. Add to `.env` file:**
+
+```bash
+# Security Settings
+ADMIN_API_KEY=qJ8K-_3mN5rT9wXyZ2pL4vC8bH6fD1aE7sG0kM9uQ4R
+```
+
+### Using Admin Endpoints
+
+**Example: Get pending reservations**
+
+```bash
+curl -H "X-Admin-API-Key: your-api-key" \
+  http://localhost:8000/api/admin/reservations/pending
+```
+
+**Example: Approve reservation**
+
+```bash
+curl -X POST \
+  -H "X-Admin-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"approved": true, "comment": "Approved for VIP customer"}' \
+  http://localhost:8000/api/admin/reservations/res_abc123/approve
+```
