@@ -5,7 +5,7 @@ pyenv local 3.12.9
 python3 -m venv .venv
 source .venv/bin/activate
 ```
-### Reservation Status (User - Public)
+
 # Step #2 - install requirements
 ```bash
 pip install -r requirements.txt
@@ -89,8 +89,6 @@ Content-Type: application/json
 - `POST /api/conversations/{id}/reset` - Reset conversation
 
 ### Human-in-the-Loop (Admin)
-
-**⚠️ IMPORTANT: All admin endpoints require authentication!**
 
 You must include the `X-Admin-API-Key` header with a valid API key:
 
