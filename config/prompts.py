@@ -172,3 +172,56 @@ You can say something like "from January 20th to January 25th" or "tomorrow for 
 INVALID_INPUT_MESSAGE = """I'm sorry, I couldn't understand that. Could you please try again?
 
 {context}"""
+
+ADMIN_REVIEW_PROMPT = """You are formatting a parking reservation request for administrator review.
+
+Reservation Details:
+- ID: {reservation_id}
+- Customer: {name} {surname}
+- Car Plate: {car_plate}
+- Start Date: {start_time}
+- End Date: {end_time}
+- Requested At: {created_at}
+
+Please format this as a clear, professional summary for the administrator to review.
+Include all key details and make it easy to approve or reject.
+
+Your formatted summary:"""
+
+ADMIN_APPROVAL_CONFIRMATION_PROMPT = """Generate a confirmation message for the customer after their reservation was approved.
+
+Customer: {name} {surname}
+Car: {car_plate}
+Dates: {start_time} to {end_time}
+Admin Comment: {admin_comment}
+
+Create a friendly, professional confirmation message that:
+1. Congratulates them on approval
+2. Confirms the details
+3. Provides any next steps
+
+Your confirmation message:"""
+
+ADMIN_REJECTION_MESSAGE_PROMPT = """Generate a rejection message for the customer.
+
+Customer Name: {name}
+Rejection Reason: {reason}
+
+Create a polite, empathetic message that:
+1. Informs them of the rejection
+2. Explains the reason clearly
+3. Offers alternatives or next steps if possible
+
+Your rejection message:"""
+
+PENDING_APPROVAL_USER_MESSAGE = """Thank you! Your reservation request has been submitted successfully.
+
+Reservation Summary:
+- Name: {name} {surname}
+- Car Plate: {car_plate}
+- Period: {start_time} to {end_time}
+
+Your request is now pending administrator approval.
+You will be notified once a decision is made.
+
+Thank you for your patience!"""

@@ -19,6 +19,9 @@ class ReservationStatus(str, Enum):
     COLLECTING_CAR_PLATE = "collecting_car_plate"
     COLLECTING_DATES = "collecting_dates"
     CONFIRMING = "confirming"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
@@ -56,6 +59,20 @@ class ChatbotState(TypedDict):
     wants_reservation: bool
     retry_count: int
 
+    # Admin approval workflow fields
+    reservation_id: Optional[str]
+    waiting_for_admin: bool
+    admin_review_message: Optional[str]
+    admin_decision: Optional[str]
+    admin_comment: Optional[str]
+
+    # MCP persistence fields
+    mcp_persisted: bool
+    mcp_error: Optional[str]
+
+    # Final notification
+    final_message: Optional[str]
+
 
 def create_initial_state(
     user_input: str,
@@ -74,5 +91,13 @@ def create_initial_state(
         conversation_id=conversation_id,
         user_id=None,
         wants_reservation=False,
-        retry_count=0
+        retry_count=0,
+        reservation_id=None,
+        waiting_for_admin=False,
+        admin_review_message=None,
+        admin_decision=None,
+        admin_comment=None,
+        mcp_persisted=False,
+        mcp_error=None,
+        final_message=None
     )

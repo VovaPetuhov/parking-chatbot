@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from datetime import datetime
 from typing import Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -7,14 +9,19 @@ from langchain_core.prompts import PromptTemplate
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from config.prompts import (ASK_CAR_PLATE_MESSAGE, ASK_DATES_MESSAGE,
-                            ASK_NAME_MESSAGE, ASK_SURNAME_MESSAGE,
-                            CONFIRM_DATA_PROMPT, INVALID_INPUT_MESSAGE)
+from config.prompts import (ADMIN_APPROVAL_CONFIRMATION_PROMPT,
+                            ADMIN_REJECTION_MESSAGE_PROMPT,
+                            ADMIN_REVIEW_PROMPT, ASK_CAR_PLATE_MESSAGE,
+                            ASK_DATES_MESSAGE, ASK_NAME_MESSAGE,
+                            ASK_SURNAME_MESSAGE, CONFIRM_DATA_PROMPT,
+                            INVALID_INPUT_MESSAGE,
+                            PENDING_APPROVAL_USER_MESSAGE)
 from core.data_extractor import get_data_extractor
 from core.rag import get_rag_system
 from graphs.state import (ChatbotState, ReservationData, ReservationStatus,
                           create_initial_state)
 from guardrails.pii_protection import get_guardrails_manager
+from mcp_client.client import get_mcp_client
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +57,14 @@ class ParkingChatbot:
         workflow.add_node("collect_dates", self._collect_dates)
         workflow.add_node("confirm_reservation", self._confirm_reservation)
         workflow.add_node("finalize_reservation", self._finalize_reservation)
+
+        # Admin Agent nodes
+        workflow.add_node("format_for_admin", self._format_for_admin)
+        workflow.add_node("wait_for_admin_decision", self._wait_for_admin_decision)
+        workflow.add_node("process_admin_approval", self._process_admin_approval)
+        workflow.add_node("process_admin_rejection", self._process_admin_rejection)
+        workflow.add_node("persist_to_mcp", self._persist_to_mcp_node)
+        workflow.add_node("notify_user_final", self._notify_user_final)
 
         # Add edges
         workflow.add_edge(START, "check_guardrails")
@@ -134,10 +149,36 @@ class ParkingChatbot:
             }
         )
 
-        workflow.add_edge("finalize_reservation", END)
+        workflow.add_edge("finalize_reservation", "format_for_admin")
+        workflow.add_edge("format_for_admin", "wait_for_admin_decision")
+
+        # Conditional routing after admin decision
+        workflow.add_conditional_edges(
+            "wait_for_admin_decision",
+            self._route_after_admin_decision,
+            {
+                "approved": "process_admin_approval",
+                "rejected": "process_admin_rejection",
+                "waiting": "wait_for_admin_decision"
+            }
+        )
+
+        # Admin approval path - goes through MCP
+        workflow.add_edge("process_admin_approval", "persist_to_mcp")
+        workflow.add_edge("persist_to_mcp", "notify_user_final")
+
+        # Admin rejection path - skips MCP, goes directly to notification
+        workflow.add_edge("process_admin_rejection", "notify_user_final")
+
+        # Final notification ends the graph
+        workflow.add_edge("notify_user_final", END)
 
         memory = MemorySaver()
-        return workflow.compile(checkpointer=memory)
+        # Add interrupt_before for human-in-the-loop admin approval
+        return workflow.compile(
+            checkpointer=memory,
+            interrupt_before=["wait_for_admin_decision"]  # Graph pauses here for admin
+        )
     
     def _check_guardrails(self, state: ChatbotState) -> ChatbotState:
         logger.info("Checking guardrails...")
@@ -627,7 +668,7 @@ class ParkingChatbot:
             return "fail"
 
     def _finalize_reservation(self, state: ChatbotState) -> ChatbotState:
-        """Finalize the reservation and send to admin for approval"""
+        """Finalize the reservation and prepare for admin approval"""
         logger.info("Finalizing reservation...")
 
         data = state["reservation_data"]
@@ -650,22 +691,22 @@ class ParkingChatbot:
 
             reservation = reservation_manager.create_reservation_sync(reservation_data)
 
-            message = (
-                f"Thank you, {data.name}! Your reservation request has been submitted.\n\n"
-                f"Reservation Details:\n"
-                f"Name: {data.name} {data.surname}\n"
-                f"Car Plate: {data.car_plate}\n"
-                f"Period: {data.start_time} to {data.end_time}\n\n"
-                f"reservation ID: {reservation.reservation_id}\n\n"
-                f"Your request is now being reviewed by our administrator. "
-                f"You will be notified once a decision is made. "
-                f"You can check the status anytime using your reservation ID."
+            state["reservation_id"] = reservation.reservation_id
+            state["reservation_status"] = ReservationStatus.PENDING_APPROVAL
+
+            message = PENDING_APPROVAL_USER_MESSAGE.format(
+                name=data.name,
+                surname=data.surname,
+                car_plate=data.car_plate,
+                start_time=data.start_time,
+                end_time=data.end_time
             )
 
             logger.info(
                 f"Reservation created: {reservation.reservation_id} for "
                 f"{data.name} {data.surname}, {data.car_plate}, "
-                f"{data.start_time} - {data.end_time}"
+                f"{data.start_time} - {data.end_time}. "
+                f"Now proceeding to admin workflow."
             )
 
         except Exception as e:
@@ -674,18 +715,227 @@ class ParkingChatbot:
                 f"Your reservation data has been collected:\n\n"
                 f"Details:\n"
                 f"Name: {data.name} {data.surname}\n"
-                f"car Plate: {data.car_plate}\n"
+                f"Car Plate: {data.car_plate}\n"
                 f"Period: {data.start_time} to {data.end_time}\n\n"
                 f"However, there was a technical issue submitting it for approval. "
                 f"Please contact our support team."
             )
+            state["reservation_status"] = ReservationStatus.CANCELLED
 
-        state["response"] = message
+            state["response"] = message
+            state["messages"] = state.get("messages", []) + [
+                AIMessage(content=message)
+            ]
+
+            # NOTE: We do NOT reset reservation_status to NOT_STARTED anymore
+            # Graph will continue to admin approval workflow
+
+        return state
+
+    def _format_for_admin(self, state: ChatbotState) -> ChatbotState:
+        """
+        Format reservation for admin review using LangChain LCEL
+        LCEL Chain: PromptTemplate | LLM | StrOutputParser
+        """
+        logger.info("Formatting reservation for admin using LangChain...")
+
+        from datetime import datetime
+
+        prompt = PromptTemplate.from_template(ADMIN_REVIEW_PROMPT)
+        chain = prompt | self.rag_system.llm | StrOutputParser()
+
+        data = state["reservation_data"]
+        reservation_id = state.get("reservation_id", "PENDING")
+
+        formatted_message = chain.invoke({
+            "reservation_id": reservation_id,
+            "name": data.name,
+            "surname": data.surname,
+            "car_plate": data.car_plate,
+            "start_time": data.start_time,
+            "end_time": data.end_time,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+
+        state["admin_review_message"] = formatted_message
+        state["waiting_for_admin"] = True
+
+        logger.info(f"Reservation {reservation_id} formatted for admin review")
+
+        return state
+
+    def _wait_for_admin_decision(self, state: ChatbotState) -> ChatbotState:
+        """
+        Wait for admin decision (interrupt point)
+        This node is where the graph pauses for human input.
+        Graph will resume when admin makes a decision via API.
+        """
+        logger.info("Waiting for admin decision...")
+
+        reservation_id = state.get("reservation_id", "UNKNOWN")
+
+        if state.get("admin_decision"):
+            logger.info(
+                f"Admin decision received for {reservation_id}: "
+                f"{state['admin_decision']}"
+            )
+        else:
+            logger.info(
+                f"No admin decision yet for {reservation_id}, "
+                f"graph will pause here (interrupt_before)"
+            )
+            state["waiting_for_admin"] = True
+
+        return state
+
+    def _route_after_admin_decision(
+        self,
+        state: ChatbotState
+    ) -> Literal["approved", "rejected", "waiting"]:
+        """Route based on admin decision"""
+
+        decision = state.get("admin_decision")
+
+        if decision == "approved":
+            logger.info("Routing to approval processing")
+            return "approved"
+        elif decision == "rejected":
+            logger.info("Routing to rejection processing")
+            return "rejected"
+        else:
+            logger.info("Still waiting for admin decision")
+            return "waiting"
+
+    def _process_admin_approval(self, state: ChatbotState) -> ChatbotState:
+        """
+        Process admin approval using LangChain
+        LCEL Chain: PromptTemplate | LLM | StrOutputParser
+        """
+        logger.info("Processing admin approval with LangChain...")
+
+        prompt = PromptTemplate.from_template(ADMIN_APPROVAL_CONFIRMATION_PROMPT)
+        chain = prompt | self.rag_system.llm | StrOutputParser()
+
+        data = state["reservation_data"]
+
+        confirmation_message = chain.invoke({
+            "name": data.name,
+            "surname": data.surname,
+            "car_plate": data.car_plate,
+            "start_time": data.start_time,
+            "end_time": data.end_time,
+            "admin_comment": state.get("admin_comment", "Approved")
+        })
+
+        state["final_message"] = confirmation_message
+        state["reservation_status"] = ReservationStatus.APPROVED
+
+        logger.info(f"Admin approval processed for {state.get('reservation_id')}")
+
+        return state
+
+    def _process_admin_rejection(self, state: ChatbotState) -> ChatbotState:
+        """
+        Process admin rejection using LangChain
+        LCEL Chain: PromptTemplate | LLM | StrOutputParser
+        """
+        logger.info("Processing admin rejection with LangChain...")
+
+        prompt = PromptTemplate.from_template(ADMIN_REJECTION_MESSAGE_PROMPT)
+        chain = prompt | self.rag_system.llm | StrOutputParser()
+
+        data = state["reservation_data"]
+
+        rejection_message = chain.invoke({
+            "name": data.name,
+            "reason": state.get("admin_comment", "No reason provided")
+        })
+
+        state["final_message"] = rejection_message
+        state["reservation_status"] = ReservationStatus.REJECTED
+
+        logger.info(f"Admin rejection processed for {state.get('reservation_id')}")
+
+        return state
+
+    def _persist_to_mcp_node(self, state: ChatbotState) -> ChatbotState:
+        """Persist approved reservation to MCP"""
+        logger.info("Persisting to MCP as graph node...")
+
+        try:
+
+            mcp_client = get_mcp_client()
+            if mcp_client.is_connected():
+                reservation_data = state["reservation_data"]
+                reservation_id = state.get("reservation_id", "UNKNOWN")
+
+                record = (
+                    f"Reservation: {reservation_id}\n"
+                    f"Name: {reservation_data.name} {reservation_data.surname}\n"
+                    f"Car: {reservation_data.car_plate}\n"
+                    f"Dates: {reservation_data.start_time} - {reservation_data.end_time}\n"
+                    f"Approved: {datetime.now().isoformat()}\n"
+                    f"Admin Comment: {state.get('admin_comment', 'N/A')}\n"
+                    f"Status: CONFIRMED\n"
+                    f"{'-' * 50}\n"
+                )
+
+                try:
+                    asyncio.run(mcp_client.write_to_file(
+                        "confirmed_reservations.txt",
+                        record,
+                        mode="append"
+                    ))
+
+                    logger.info(
+                        f"Reservation {reservation_id} persisted to MCP successfully"
+                    )
+                    state["mcp_persisted"] = True
+                except Exception as e:
+                    logger.error(f"Error writing to MCP: {e}")
+                    state["mcp_persisted"] = False
+                    state["mcp_error"] = str(e)
+            else:
+                logger.warning("MCP not connected, skipping persistence")
+                state["mcp_persisted"] = False
+                state["mcp_error"] = "MCP not connected"
+
+        except Exception as e:
+            logger.error(f"Error in MCP persistence node: {e}", exc_info=True)
+            state["mcp_persisted"] = False
+            state["mcp_error"] = str(e)
+
+        return state
+
+    def _notify_user_final(self, state: ChatbotState) -> ChatbotState:
+        """Send final notification to user after admin decision"""
+        logger.info("Sending final notification to user...")
+
+        final_message = state.get(
+            "final_message",
+            "Your reservation has been processed."
+        )
+
+        if state["reservation_status"] == ReservationStatus.APPROVED:
+            if state.get("mcp_persisted"):
+                final_message += "\n\nYour reservation has been saved to our system."
+            else:
+                mcp_error = state.get("mcp_error", "Unknown error")
+                logger.warning(
+                    f"MCP persistence failed: {mcp_error}. "
+                    f"User will still receive approval message."
+                )
+
+        state["response"] = final_message
         state["messages"] = state.get("messages", []) + [
-            AIMessage(content=message)
+            AIMessage(content=final_message)
         ]
 
-        state["reservation_status"] = ReservationStatus.NOT_STARTED
+        state["waiting_for_admin"] = False
+
+        logger.info(
+            f"Final notification sent. Status: {state['reservation_status']}"
+        )
 
         return state
     
