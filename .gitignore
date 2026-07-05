@@ -58,9 +58,11 @@ node_modules/
 # npm cache directory
 .npm
 
-# Ignore actual reservation files
+# Ignore actual reservation files and lock files
 storage/*.txt
 storage/*.csv
 storage/*.json
+storage/*.lock
+storage/*.tmp
 
 !storage/.gitkeep
