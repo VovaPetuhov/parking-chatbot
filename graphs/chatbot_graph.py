@@ -182,6 +182,16 @@ class ParkingChatbot:
     
     def _check_guardrails(self, state: ChatbotState) -> ChatbotState:
         logger.info("Checking guardrails...")
+
+        if "user_input" not in state or not state.get("user_input"):
+            if state.get("waiting_for_admin") or state.get("admin_decision"):
+                logger.info("Skipping guardrails check (admin workflow resume)")
+                state["input_safe"] = True
+                return state
+            logger.warning("No user_input in state and not admin workflow")
+            state["input_safe"] = False
+            return state
+
         user_input = state["user_input"]
         report = self.guardrails.check_input(user_input)
         state["input_safe"] = not report["should_block"]
@@ -199,7 +209,11 @@ class ParkingChatbot:
     def _check_reservation_intent(self, state: ChatbotState) -> ChatbotState:
         """Check if user wants to make a reservation or continue existing one"""
         logger.info("Checking reservation intent...")
-        
+
+        if state.get("admin_decision") or state.get("waiting_for_admin"):
+            logger.info("Skipping reservation intent check (admin workflow)")
+            return state
+
         current_status = state["reservation_status"]
         logger.info(f"Current reservation status: {current_status}")
 
@@ -226,6 +240,10 @@ class ParkingChatbot:
     ) -> Literal["new_reservation", "continue_reservation", "normal_query"]:
         """Route based on reservation intent"""
 
+        if state.get("admin_decision") or state.get("waiting_for_admin"):
+            logger.info("Admin workflow detected in routing - this shouldn't happen")
+            return "normal_query"
+
         # If already collecting name (status set by start_reservation)
         if state["reservation_status"] == ReservationStatus.COLLECTING_NAME:
             return "continue_reservation"
@@ -248,6 +266,12 @@ class ParkingChatbot:
 
     def _retrieve_context(self, state: ChatbotState) -> ChatbotState:
         logger.info("Retrieving context...")
+
+        if state.get("admin_decision") or state.get("waiting_for_admin"):
+            logger.info("Skipping context retrieval (admin workflow)")
+            state["retrieved_context"] = ""
+            return state
+
         user_input = state["user_input"]
         logger.info(f"Retrieving context for: {user_input}")
         docs = self.rag_system.retrieve_context(user_input)        
@@ -259,6 +283,11 @@ class ParkingChatbot:
     
     def _generate_response(self, state: ChatbotState) -> ChatbotState:
         logger.info("Generating response...")
+
+        if state.get("admin_decision") or state.get("waiting_for_admin"):
+            logger.info("Skipping response generation (admin workflow)")
+            return state
+
         user_input = state["user_input"]
         logger.info(f"Generating answer for: {user_input}")
         context = state["retrieved_context"] or ""
@@ -727,9 +756,6 @@ class ParkingChatbot:
                 AIMessage(content=message)
             ]
 
-            # NOTE: We do NOT reset reservation_status to NOT_STARTED anymore
-            # Graph will continue to admin approval workflow
-
         return state
 
     def _format_for_admin(self, state: ChatbotState) -> ChatbotState:
@@ -813,17 +839,36 @@ class ParkingChatbot:
         """
         logger.info("Processing admin approval with LangChain...")
 
+        data = state.get("reservation_data")
+        if not data:
+            logger.error("No reservation_data in state during approval")
+            state["final_message"] = "Error: Reservation data not found"
+            state["reservation_status"] = ReservationStatus.CANCELLED
+            state["mcp_persisted"] = False
+            return state
+
         prompt = PromptTemplate.from_template(ADMIN_APPROVAL_CONFIRMATION_PROMPT)
         chain = prompt | self.rag_system.llm | StrOutputParser()
 
-        data = state["reservation_data"]
+        if isinstance(data, dict):
+            name = data.get("name")
+            surname = data.get("surname")
+            car_plate = data.get("car_plate")
+            start_time = data.get("start_time")
+            end_time = data.get("end_time")
+        else:
+            name = getattr(data, "name", None)
+            surname = getattr(data, "surname", None)
+            car_plate = getattr(data, "car_plate", None)
+            start_time = getattr(data, "start_time", None)
+            end_time = getattr(data, "end_time", None)
 
         confirmation_message = chain.invoke({
-            "name": data.name,
-            "surname": data.surname,
-            "car_plate": data.car_plate,
-            "start_time": data.start_time,
-            "end_time": data.end_time,
+            "name": name,
+            "surname": surname,
+            "car_plate": car_plate,
+            "start_time": start_time,
+            "end_time": end_time,
             "admin_comment": state.get("admin_comment", "Approved")
         })
 
@@ -841,13 +886,23 @@ class ParkingChatbot:
         """
         logger.info("Processing admin rejection with LangChain...")
 
+        data = state.get("reservation_data")
+        if not data:
+            logger.error("No reservation_data in state during rejection")
+            state["final_message"] = "Error: Reservation data not found"
+            state["reservation_status"] = ReservationStatus.CANCELLED
+            return state
+
         prompt = PromptTemplate.from_template(ADMIN_REJECTION_MESSAGE_PROMPT)
         chain = prompt | self.rag_system.llm | StrOutputParser()
 
-        data = state["reservation_data"]
+        if isinstance(data, dict):
+            name = data.get("name")
+        else:
+            name = getattr(data, "name", None)
 
         rejection_message = chain.invoke({
-            "name": data.name,
+            "name": name,
             "reason": state.get("admin_comment", "No reason provided")
         })
 
@@ -858,47 +913,67 @@ class ParkingChatbot:
 
         return state
 
-    def _persist_to_mcp_node(self, state: ChatbotState) -> ChatbotState:
-        """Persist approved reservation to MCP"""
+    async def _persist_to_mcp_node(self, state: ChatbotState) -> ChatbotState:
+        """Persist approved reservation to MCP (async node using MCP server)"""
         logger.info("Persisting to MCP as graph node...")
 
         try:
+            reservation_data = state.get("reservation_data")
+            if not reservation_data:
+                logger.error("No reservation_data in state for MCP persistence")
+                state["mcp_persisted"] = False
+                state["mcp_error"] = "No reservation data"
+                return state
+
+            if isinstance(reservation_data, dict):
+                name = reservation_data.get("name")
+                surname = reservation_data.get("surname")
+                car_plate = reservation_data.get("car_plate")
+                start_time = reservation_data.get("start_time")
+                end_time = reservation_data.get("end_time")
+            else:
+                name = getattr(reservation_data, "name", None)
+                surname = getattr(reservation_data, "surname", None)
+                car_plate = getattr(reservation_data, "car_plate", None)
+                start_time = getattr(reservation_data, "start_time", None)
+                end_time = getattr(reservation_data, "end_time", None)
 
             mcp_client = get_mcp_client()
-            if mcp_client.is_connected():
-                reservation_data = state["reservation_data"]
-                reservation_id = state.get("reservation_id", "UNKNOWN")
 
-                record = (
-                    f"Reservation: {reservation_id}\n"
-                    f"Name: {reservation_data.name} {reservation_data.surname}\n"
-                    f"Car: {reservation_data.car_plate}\n"
-                    f"Dates: {reservation_data.start_time} - {reservation_data.end_time}\n"
-                    f"Approved: {datetime.now().isoformat()}\n"
-                    f"Admin Comment: {state.get('admin_comment', 'N/A')}\n"
-                    f"Status: CONFIRMED\n"
-                    f"{'-' * 50}\n"
+            if not mcp_client.settings.MCP_ENABLED:
+                logger.warning("MCP is disabled in settings, skipping persistence")
+                state["mcp_persisted"] = False
+                state["mcp_error"] = "MCP disabled"
+                return state
+
+            reservation_id = state.get("reservation_id", "UNKNOWN")
+
+            try:
+                logger.info(f"Writing reservation {reservation_id} to MCP server...")
+
+                success = await mcp_client.write_confirmed_reservation(
+                    name=name,
+                    surname=surname,
+                    car_plate=car_plate,
+                    start_time=start_time,
+                    end_time=end_time,
+                    approval_time=datetime.now()
                 )
 
-                try:
-                    asyncio.run(mcp_client.write_to_file(
-                        "confirmed_reservations.txt",
-                        record,
-                        mode="append"
-                    ))
-
+                if success:
                     logger.info(
                         f"Reservation {reservation_id} persisted to MCP successfully"
                     )
                     state["mcp_persisted"] = True
-                except Exception as e:
-                    logger.error(f"Error writing to MCP: {e}")
+                else:
+                    logger.error(f"MCP write returned False for {reservation_id}")
                     state["mcp_persisted"] = False
-                    state["mcp_error"] = str(e)
-            else:
-                logger.warning("MCP not connected, skipping persistence")
+                    state["mcp_error"] = "MCP write failed"
+
+            except Exception as e:
+                logger.error(f"Error writing to MCP: {e}", exc_info=True)
                 state["mcp_persisted"] = False
-                state["mcp_error"] = "MCP not connected"
+                state["mcp_error"] = str(e)
 
         except Exception as e:
             logger.error(f"Error in MCP persistence node: {e}", exc_info=True)

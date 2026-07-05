@@ -9,6 +9,7 @@ from api.reservation_manager import get_reservation_manager
 from api.reservation_models import (ReservationApproval,
                                     ReservationListResponse,
                                     ReservationResponse, ReservationStatusEnum)
+from graphs.state import ReservationData
 from mcp_client import get_mcp_client
 
 logger = logging.getLogger(__name__)
@@ -134,18 +135,30 @@ async def approve_reservation(
 
         config = {"configurable": {"thread_id": conversation_id}}
 
+        reservation_data = ReservationData(
+            name=reservation.name,
+            surname=reservation.surname,
+            car_plate=reservation.car_plate,
+            start_time=reservation.start_time,
+            end_time=reservation.end_time
+        )
+
         chatbot.graph.update_state(config, {
             "admin_decision": "approved",
-            "admin_comment": approval.comment or "Approved by administrator"
-        })
+            "admin_comment": approval.comment or "Approved by administrator",
+            "reservation_data": reservation_data,
+            "reservation_id": reservation_id
+        }, as_node="wait_for_admin_decision")
 
         logger.info(
             f"Updated graph state with approval for {reservation_id}. "
-            f"Resuming graph..."
+            f"Resuming graph from interrupt..."
         )
 
-
-        result = chatbot.graph.invoke(None, config)
+        result = None
+        async for chunk in chatbot.graph.astream(None, config, stream_mode="values"):
+            result = chunk
+            logger.debug(f"Graph chunk: {chunk.get('reservation_status')}")
 
         logger.info(
             f"Graph resumed and completed for {reservation_id}. "
@@ -236,17 +249,29 @@ async def reject_reservation(
 
         config = {"configurable": {"thread_id": conversation_id}}
 
+        reservation_data = ReservationData(
+            name=reservation.name,
+            surname=reservation.surname,
+            car_plate=reservation.car_plate,
+            start_time=reservation.start_time,
+            end_time=reservation.end_time
+        )
+
         chatbot.graph.update_state(config, {
             "admin_decision": "rejected",
-            "admin_comment": approval.comment
-        })
+            "admin_comment": approval.comment,
+            "reservation_data": reservation_data,
+            "reservation_id": reservation_id
+        }, as_node="wait_for_admin_decision")
 
         logger.info(
             f"Updated graph state with rejection for {reservation_id}. "
-            f"Resuming graph..."
+            f"Resuming graph from interrupt..."
         )
 
-        result = chatbot.graph.invoke(None, config)
+        async for chunk in chatbot.graph.astream(None, config, stream_mode="values"):
+            result = chunk
+            logger.debug(f"Graph chunk: {chunk.get('reservation_status')}")
 
         logger.info(
             f"Graph resumed and completed for {reservation_id}. "
