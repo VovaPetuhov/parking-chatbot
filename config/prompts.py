@@ -216,7 +216,8 @@ Your rejection message:"""
 
 PENDING_APPROVAL_USER_MESSAGE = """Thank you! Your reservation request has been submitted successfully.
 
-Reservation Summary:
+Reservation Details:
+- Reservation ID: {reservation_id}
 - Name: {name} {surname}
 - Car Plate: {car_plate}
 - Period: {start_time} to {end_time}

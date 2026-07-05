@@ -728,14 +728,20 @@ class ParkingChatbot:
                 surname=data.surname,
                 car_plate=data.car_plate,
                 start_time=data.start_time,
-                end_time=data.end_time
+                end_time=data.end_time,
+                reservation_id=reservation.reservation_id
             )
+
+            state["response"] = message
+            state["messages"] = state.get("messages", []) + [
+                AIMessage(content=message)
+            ]
 
             logger.info(
                 f"Reservation created: {reservation.reservation_id} for "
                 f"{data.name} {data.surname}, {data.car_plate}, "
                 f"{data.start_time} - {data.end_time}. "
-                f"Now proceeding to admin workflow."
+                f"User notified. Now proceeding to admin workflow."
             )
 
         except Exception as e:
