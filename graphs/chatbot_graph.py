@@ -44,6 +44,7 @@ class ParkingChatbot:
 
         # Add nodes
         workflow.add_node("check_guardrails", self._check_guardrails)
+        workflow.add_node("check_reservation_status", self._check_reservation_status)
         workflow.add_node("check_reservation_intent", self._check_reservation_intent)
         workflow.add_node("retrieve_context", self._retrieve_context)
         workflow.add_node("generate_response", self._generate_response)
@@ -73,8 +74,17 @@ class ParkingChatbot:
             "check_guardrails",
             self._route_after_guardrails,
             {
-                "safe": "check_reservation_intent",
+                "safe": "check_reservation_status",
                 "unsafe": "handle_unsafe_input"
+            }
+        )
+
+        workflow.add_conditional_edges(
+            "check_reservation_status",
+            self._route_after_status_check,
+            {
+                "status_query": END,
+                "continue": "check_reservation_intent"
             }
         )
 
@@ -199,12 +209,116 @@ class ParkingChatbot:
         if not state["input_safe"]:
             logger.warning(f"Unsafe input detected: {report}")
         return state
-    
+
     def _route_after_guardrails(
         self,
         state: ChatbotState
     ) -> Literal["safe", "unsafe"]:
         return "safe" if state["input_safe"] else "unsafe"
+
+    async def _check_reservation_status(self, state: ChatbotState) -> ChatbotState:
+        """Check if user is asking about reservation status and fetch latest status"""
+        logger.info("Checking if user is asking about reservation status...")
+
+        if state.get("admin_decision") or state.get("waiting_for_admin"):
+            logger.info("Skipping status check (admin workflow)")
+            return state
+
+        user_input = state.get("user_input", "").lower()
+
+        status_keywords = [
+            "status", "approved", "rejected", "pending", 
+            "decision", "reviewed", "confirmation",
+            "what happened", "is it approved", "did admin",
+            "my reservation", "my booking"
+        ]
+
+        is_status_query = any(keyword in user_input for keyword in status_keywords)
+
+        if is_status_query and state.get("reservation_id"):
+            logger.info(f"User is asking about status, checking reservation {state['reservation_id']}")
+
+            try:
+                from api.reservation_manager import get_reservation_manager
+
+                reservation_manager = get_reservation_manager()
+                reservation_id = state["reservation_id"]
+
+                reservation = await reservation_manager.get_reservation(reservation_id)
+
+                if reservation:
+                    logger.info(f"Found reservation {reservation_id} with status: {reservation.status}")
+
+                    if reservation.status.value == "approved":
+                        state["reservation_status"] = ReservationStatus.APPROVED
+                        message = f"Great news! Your reservation has been APPROVED!\n\n" \
+                                f"Reservation ID: {reservation.reservation_id}\n" \
+                                f"Name: {reservation.name} {reservation.surname}\n" \
+                                f"Car: {reservation.car_plate}\n" \
+                                f"Period: {reservation.start_time} to {reservation.end_time}\n"
+
+                        if reservation.admin_comment:
+                            message += f"\nAdmin comment: {reservation.admin_comment}\n"
+
+                        message += "\nYou can proceed to the parking location during your reserved period."
+
+                    elif reservation.status.value == "rejected":
+                        state["reservation_status"] = ReservationStatus.REJECTED
+                        message = f"Unfortunately, your reservation has been REJECTED.\n\n" \
+                                f"Reservation ID: {reservation.reservation_id}\n"
+
+                        if reservation.admin_comment:
+                            message += f"\nReason: {reservation.admin_comment}\n"
+
+                        message += "\nYou can make a new reservation if you'd like to try different dates."
+
+                    elif reservation.status.value == "pending_approval":
+                        state["reservation_status"] = ReservationStatus.PENDING_APPROVAL
+                        message = f"Your reservation is still PENDING approval.\n\n" \
+                                f"Reservation ID: {reservation.reservation_id}\n" \
+                                f"Name: {reservation.name} {reservation.surname}\n" \
+                                f"Car: {reservation.car_plate}\n" \
+                                f"Period: {reservation.start_time} to {reservation.end_time}\n\n" \
+                                f"An administrator will review your request shortly.\n" \
+                                f"You will be notified once a decision is made."
+
+                    elif reservation.status.value == "expired":
+                        state["reservation_status"] = ReservationStatus.CANCELLED
+                        message = f"Your reservation request has EXPIRED.\n\n" \
+                                f"Reservation ID: {reservation.reservation_id}\n\n" \
+                                f"Please submit a new reservation request if you still need parking."
+                    else:
+                        message = f"Your reservation status: {reservation.status.value}"
+
+                    state["response"] = message
+                    state["is_status_query"] = True
+                    state["messages"] = state.get("messages", []) + [
+                        HumanMessage(content=state["user_input"]),
+                        AIMessage(content=message)
+                    ]
+
+                    logger.info(f"Status query answered with latest status: {reservation.status.value}")
+                else:
+                    logger.warning(f"Reservation {reservation_id} not found")
+                    state["is_status_query"] = False
+
+            except Exception as e:
+                logger.error(f"Error checking reservation status: {e}", exc_info=True)
+                state["is_status_query"] = False
+        else:
+            state["is_status_query"] = False
+
+        return state
+
+    def _route_after_status_check(
+        self,
+        state: ChatbotState
+    ) -> Literal["status_query", "continue"]:
+        """Route based on whether this was a status query"""
+        if state.get("is_status_query"):
+            logger.info("Status query answered, ending conversation")
+            return "status_query"
+        return "continue"
     
     def _check_reservation_intent(self, state: ChatbotState) -> ChatbotState:
         """Check if user wants to make a reservation or continue existing one"""
@@ -1020,10 +1134,10 @@ class ParkingChatbot:
 
         return state
     
-    def chat(self, message: str, conversation_id: str = "default") -> str:
+    async def chat_async(self, message: str, conversation_id: str = "default") -> str:
         logger.info(f"Processing message: {message}")
         config = {"configurable": {"thread_id": conversation_id}}        
-        
+
         # Try to get existing state from checkpoint
         try:
             existing_state = self.graph.get_state(config)
@@ -1035,15 +1149,25 @@ class ParkingChatbot:
             else:
                 # No existing state, create new one
                 current_state = create_initial_state(user_input=message)
+                current_state["conversation_id"] = conversation_id
                 logger.info("Starting new conversation")
         except Exception as e:
             logger.warning(f"Could not retrieve existing state: {e}")
             current_state = create_initial_state(user_input=message)
-        
-        result = self.graph.invoke(current_state, config=config)  
+            current_state["conversation_id"] = conversation_id
+
+        result = await self.graph.ainvoke(current_state, config=config)  
         response = result.get("response", "I'm sorry, I couldn't process that.")
         logger.info("Message processed")
         return response
+
+    def chat(self, message: str, conversation_id: str = "default") -> str:
+        """Synchronous wrapper for chat_async"""
+        try:
+            loop = asyncio.get_running_loop()
+            return asyncio.create_task(self.chat_async(message, conversation_id))
+        except RuntimeError:
+            return asyncio.run(self.chat_async(message, conversation_id))
     
     def get_conversation_history(self, conversation_id: str = "default") -> list:
         config = {"configurable": {"thread_id": conversation_id}}        
